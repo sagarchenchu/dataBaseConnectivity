@@ -1,131 +1,122 @@
-# dataBaseConnectivity
+# dataBaseConnectivity — `dbquery.exe`
 
-A **`dbquery`** executable that connects to **Microsoft SQL Server** using the
-official [`com.microsoft.sqlserver:mssql-jdbc:13.4.0.jre11`](https://github.com/microsoft/mssql-jdbc)
-driver, executes a SQL query, and returns the results as JSON — designed to be
-called from any language (including Java) through a simple subprocess interface.
+A **native executable** (`dbquery.exe` on Windows, `dbquery` on Linux/macOS)
+that connects to **Microsoft SQL Server**, executes a SQL query, and returns
+the results as JSON — with **no Java runtime required** on the target machine.
+
+Built with Go and [`github.com/microsoft/go-mssqldb`](https://github.com/microsoft/go-mssqldb),
+the official Microsoft Go SQL Server driver.
 
 ---
 
 ## How it works
 
 ```
-  Your Java app
-       │
-       │  ProcessBuilder / Runtime.exec()
-       ▼
-  dbquery.bat / dbquery.sh  ──► java -jar dbquery.jar
-                                        │
-                                        │  mssql-jdbc 13.4.0.jre11
-                                        ▼
-                                  SQL Server
-                                        │
-                           ┌───────────┴────────────┐
-                     stdout (JSON)             stderr (safe logs)
-                     {"columns":...             [INFO] Connected …
-                      "rows":...                [INFO] Query returned …
-                      "count":N}
+  Your Java app (or any other caller)
+         │
+         │  ProcessBuilder / Runtime.exec() / shell
+         ▼
+    dbquery.exe   ──────────────────────────────► SQL Server
+    (native binary,                                     │
+     no JVM needed)                       ┌─────────────┴────────────┐
+                                    stdout (JSON)              stderr (safe logs)
+                                    {"columns":...              [INFO] Connecting …
+                                     "rows":...                 [INFO] Connected …
+                                     "count":N}                 [INFO] Query returned …
 ```
 
-Credentials (`DB_USER`, `DB_PASSWORD`) are passed via **environment variables**,
+Credentials (`--password` / `DB_PASSWORD`) are passed via **environment variables**,
 never via command-line flags, so they never appear in the OS process list.
 
 ---
 
-## Features
+## Download
 
-| Feature | Details |
+Pre-built binaries are attached to every [GitHub Release](../../releases):
+
+| Platform | File |
 |---|---|
-| **JDBC driver** | `com.microsoft.sqlserver:mssql-jdbc:13.4.0.jre11` |
-| **Executable** | Fat-JAR (`dbquery.jar`) + launcher scripts (`dbquery.sh` / `dbquery.bat`) |
-| **Safe logging** | Logs host / port / database name only — **credentials are never logged** |
-| **JSON output** | Results on stdout; log lines on stderr (capture independently) |
-| **Flexible config** | CLI flags *or* environment variables |
-| **Java integration** | `DatabaseQueryClient.java` — drop-in helper class for calling the exe from Java |
+| **Windows 64-bit** | `dbquery.exe` |
+| Linux 64-bit | `dbquery-linux-amd64` |
+| macOS 64-bit | `dbquery-macos-amd64` |
 
 ---
 
-## Quick start
-
-### 1. Build the fat-JAR
+## Build from source
 
 ```bash
-mvn package
-# Produces: target/dbquery.jar
+git clone https://github.com/sagarchenchu/dataBaseConnectivity.git
+cd dataBaseConnectivity
+
+# Windows .exe (cross-compile from Linux/macOS)
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+  go build -ldflags="-s -w" -o dbquery.exe ./cmd/dbquery
+
+# Linux binary
+CGO_ENABLED=0 go build -ldflags="-s -w" -o dbquery ./cmd/dbquery
 ```
-
-### 2. Deploy
-
-Copy the three files to the same directory:
-
-```
-dbquery.jar   ← built by mvn package
-dbquery.sh    ← Unix/macOS launcher  (chmod +x dbquery.sh)
-dbquery.bat   ← Windows launcher
-```
-
-### 3. Run
-
-```bash
-# Linux / macOS
-./dbquery.sh \
-  --host     sqlserver.example.com \
-  --port     1433 \
-  --database MyDatabase \
-  --user     appuser \
-  --password s3cr3t \
-  --query    "SELECT TOP 5 id, name FROM dbo.Customers"
-
-# Windows
-dbquery.bat --host sqlserver.example.com --port 1433 --database MyDatabase ^
-            --user appuser --password s3cr3t ^
-            --query "SELECT TOP 5 id, name FROM dbo.Customers"
-```
-
----
-
-## Download pre-built release
-
-Pre-built artifacts are attached to every
-[GitHub Release](../../releases):
-
-| File | Description |
-|---|---|
-| `dbquery.jar` | Fat-JAR (all dependencies bundled, including mssql-jdbc) |
-| `dbquery.sh` | Unix/macOS launcher |
-| `dbquery.bat` | Windows launcher |
-
-Place all three files in the same directory and run `chmod +x dbquery.sh`.
 
 ---
 
 ## CLI reference
 
 ```
-Usage: dbquery [flags]
-
-Flags (all can also be set via environment variables):
-  --host         DB_HOST      SQL Server host           (default: localhost)
-  --port         DB_PORT      SQL Server port           (default: 1433)
-  --database     DB_NAME      Database / schema name
-  --user         DB_USER      Username
-  --password     DB_PASSWORD  Password  *** never logged ***
-  --query        DB_QUERY     SQL statement to execute
-  --query-file                Path to a .sql file containing the query
-  --encrypt      true|false   TLS encryption            (default: true)
-  --trust-cert   true|false   Trust server certificate  (default: false)
-  --log-level    info|error|none  Log verbosity         (default: info)
+Usage of dbquery:
+  --driver       DB_DRIVER      Database driver (default: sqlserver)
+  --host         DB_HOST        SQL Server host (default: localhost)
+  --port         DB_PORT        SQL Server port (default: 1433)
+  --database     DB_NAME        Database / schema name
+  --user         DB_USER        Username
+  --password     DB_PASSWORD    Password  *** NEVER logged ***
+  --query        DB_QUERY       SQL statement to execute
+  --query-file                  Path to a .sql file containing the query
+  --encrypt      DB_ENCRYPT     Use TLS encryption  true|false  (default: true)
+  --trust-cert   DB_TRUST_CERT  Trust server certificate  true|false  (default: false)
+  --log-level                   info | error | none  (default: info)
 ```
 
-### Environment variables
+### Quick example
+
+```bat
+rem Windows
+dbquery.exe ^
+  --host     sqlserver.example.com ^
+  --port     1433 ^
+  --database MyDatabase ^
+  --user     appuser ^
+  --password s3cr3t ^
+  --query    "SELECT TOP 5 id, name FROM dbo.Customers"
+```
+
+```bash
+# Linux / macOS
+./dbquery \
+  --host     sqlserver.example.com \
+  --port     1433 \
+  --database MyDatabase \
+  --user     appuser \
+  --password s3cr3t \
+  --query    "SELECT TOP 5 id, name FROM dbo.Customers"
+```
+
+### Using environment variables (recommended — hides password from process list)
 
 ```bash
 export DB_HOST=sqlserver.example.com
 export DB_PORT=1433
 export DB_NAME=MyDatabase
 export DB_USER=appuser
-export DB_PASSWORD=s3cr3t          # never appears in logs
-./dbquery.sh --query "SELECT COUNT(*) AS total FROM dbo.Orders"
+export DB_PASSWORD=s3cr3t     # never written to any log
+./dbquery --query "SELECT COUNT(*) AS total FROM dbo.Orders"
+```
+
+### Read query from a file
+
+```bash
+./dbquery \
+  --host sqlserver.example.com --database MyDatabase \
+  --user appuser --password s3cr3t \
+  --query-file report.sql
 ```
 
 ---
@@ -145,13 +136,13 @@ Results are written as a single JSON line to **stdout**:
 }
 ```
 
-Log messages (safe — no credentials) are written to **stderr**:
+Safe log messages (no credentials) are written to **stderr**:
 
 ```
-[INFO] Connecting to database — driver=sqlserver host=sqlserver.example.com port=1433 database=MyDatabase
-[INFO] Connected successfully — driver=sqlserver host=sqlserver.example.com port=1433 database=MyDatabase
-[INFO] Executing query
-[INFO] Query returned 2 row(s)
+2026/04/24 10:00:00 [INFO] Connecting to database — driver=sqlserver host=sqlserver.example.com port=1433 database=MyDatabase
+2026/04/24 10:00:00 [INFO] Connected successfully — driver=sqlserver host=sqlserver.example.com port=1433 database=MyDatabase
+2026/04/24 10:00:00 [INFO] Executing query
+2026/04/24 10:00:00 [INFO] Query returned 2 row(s)
 ```
 
 Use `--log-level none` to suppress all log output.
@@ -160,33 +151,32 @@ Use `--log-level none` to suppress all log output.
 
 ## Calling from Java
 
-Copy [`java/DatabaseQueryClient.java`](java/DatabaseQueryClient.java) into your project
-(it has no extra dependencies — just standard Java SE).
+Copy [`java/DatabaseQueryClient.java`](java/DatabaseQueryClient.java) into your
+project (no extra dependencies — plain Java SE).
 
 ```java
 import com.dbconnectivity.DatabaseQueryClient;
 
 DatabaseQueryClient client = new DatabaseQueryClient.Builder()
-    // Path to dbquery.bat (Windows) or dbquery.sh (Linux/macOS)
-    .launcherPath("C:/tools/dbquery.bat")
+    .executablePath("C:/tools/dbquery.exe")   // full path to the native binary
     .host("sqlserver.example.com")
     .port(1433)
     .database("MyDatabase")
     .user("appuser")
-    .password("s3cr3t")              // passed via env var — NEVER logged
+    .password("s3cr3t")               // passed via env var — NEVER logged
     .encrypt(true)
-    .trustServerCertificate(false)   // set true only for local/dev servers
+    .trustServerCertificate(false)    // set true only for local/Docker SQL Server
     .logLevel("info")
     .build();
 
-// Returns JSON string: {"columns":[...], "rows":[{...}], "count":N}
+// Returns JSON: {"columns":[...], "rows":[{...}], "count":N}
 String json = client.query("SELECT TOP 10 id, name FROM dbo.Customers");
 System.out.println(json);
 ```
 
 The Java client:
-- Passes credentials as **environment variables** (not CLI flags), invisible in the OS process list
-- Forwards the tool's log lines (safe — no credentials) to `java.util.logging`
+- Passes credentials as **environment variables** (invisible in Task Manager / ps)
+- Forwards the tool's safe log lines to `java.util.logging`
 - Drains stdout and stderr concurrently to prevent OS pipe-buffer deadlocks
 - Throws `DatabaseQueryClient.DatabaseQueryException` on non-zero exit
 
@@ -194,20 +184,19 @@ The Java client:
 
 ## Local / self-signed SQL Server
 
-For Azure SQL or SQL Server with a trusted CA certificate, the defaults
-(`--encrypt true`, `--trust-cert false`) work without changes.
+For Azure SQL or on-prem SQL Server with a trusted CA certificate, the defaults
+(`--encrypt true`, `--trust-cert false`) work without any changes.
 
-For a **local or Docker SQL Server** using a self-signed certificate:
+For a **local or Docker SQL Server** that uses a self-signed certificate:
 
-```bash
-./dbquery.sh --host localhost --port 1433 --database testdb \
-  --user sa --password YourPassword123 \
-  --encrypt true --trust-cert true \
+```bat
+dbquery.exe --host localhost --port 1433 --database testdb ^
+  --user sa --password YourPassword123 ^
+  --encrypt true --trust-cert true ^
   --query "SELECT @@VERSION"
 ```
 
 Or in Java:
-
 ```java
 .encrypt(true)
 .trustServerCertificate(true)   // local/dev only
@@ -217,19 +206,15 @@ Or in Java:
 
 ## Security notes
 
-1. **Credentials are never logged.** Log lines contain only host / port / database.
-2. **Use environment variables or a secrets manager** — avoid passing `--password` as a CLI
-   flag since flags are visible in `ps` and Task Manager.
-3. The executable is **stateless** — no connection parameters are stored between invocations.
+1. **Credentials are never logged.** Log lines only contain `driver / host / port / database`.
+2. **Use environment variables or a secrets manager** — avoid `--password` as a CLI flag
+   since flags are visible in `ps` and Task Manager.
+3. The binary is **stateless** — no connection parameters persist between invocations.
 
 ---
 
 ## Running tests
 
 ```bash
-# Java tests (H2 in-memory — no SQL Server required)
-mvn test
-
-# Go connector tests
 go test ./...
 ```

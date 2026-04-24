@@ -1,4 +1,4 @@
-name: Build dbquery binaries
+name: Build dbquery.exe
 
 on:
   push:
@@ -8,113 +8,84 @@ on:
     branches: ["main", "master"]
 
 jobs:
-  # ── Java fat-JAR (mssql-jdbc 13.4.0.jre11) ──────────────────────────────────
-  build-jar:
-    name: Build dbquery.jar (Java / mssql-jdbc)
+  # ── Tests ────────────────────────────────────────────────────────────────────
+  test:
+    name: Test
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Java 11
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          java-version: '11'
-          distribution: temurin
+          go-version-file: go.mod
+          cache: true
+      - name: Run tests
+        run: go test ./...
 
-      - name: Cache Maven packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('pom.xml') }}
-          restore-keys: ${{ runner.os }}-maven-
-
-      - name: Build & test
-        run: mvn clean package
-
-      - name: Upload dbquery.jar
-        uses: actions/upload-artifact@v4
-        with:
-          name: dbquery-jar
-          path: |
-            target/dbquery.jar
-            dbquery.sh
-            dbquery.bat
-          retention-days: 30
-
-  # ── Go-based binaries (multi-platform) ──────────────────────────────────────
-  build-go:
-    name: Build Go binary (${{ matrix.os }})
+  # ── Build native binaries ────────────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.os }})
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
     strategy:
       matrix:
         include:
-          - os:     linux
-            goos:   linux
-            goarch: amd64
-            ext:    ""
           - os:     windows
             goos:   windows
             goarch: amd64
-            ext:    ".exe"
+            binary: dbquery.exe
+          - os:     linux
+            goos:   linux
+            goarch: amd64
+            binary: dbquery-linux-amd64
           - os:     macos
             goos:   darwin
             goarch: amd64
-            ext:    ""
+            binary: dbquery-macos-amd64
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Build dbquery (Go)
+      - name: Build ${{ matrix.binary }}
         env:
           GOOS:        ${{ matrix.goos }}
           GOARCH:      ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
           go build -ldflags="-s -w" \
-            -o dbquery-go-${{ matrix.os }}-${{ matrix.goarch }}${{ matrix.ext }} \
+            -o ${{ matrix.binary }} \
             ./cmd/dbquery
 
-      - name: Upload artifact
+      - name: Upload ${{ matrix.binary }}
         uses: actions/upload-artifact@v4
         with:
-          name: dbquery-go-${{ matrix.os }}-${{ matrix.goarch }}
-          path: dbquery-go-${{ matrix.os }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: ${{ matrix.binary }}
+          path: ${{ matrix.binary }}
           retention-days: 30
 
-  # ── Release: attach all artifacts to the GitHub Release ─────────────────────
+  # ── GitHub Release ───────────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-jar, build-go]
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
-      - name: Create release
+      - name: Attach binaries to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dbquery-jar/target/dbquery.jar
-            dbquery-jar/dbquery.sh
-            dbquery-jar/dbquery.bat
-            dbquery-go-linux-amd64/dbquery-go-linux-amd64
-            dbquery-go-windows-amd64/dbquery-go-windows-amd64.exe
-            dbquery-go-macos-amd64/dbquery-go-macos-amd64
-
+            dbquery.exe/dbquery.exe
+            dbquery-linux-amd64/dbquery-linux-amd64
+            dbquery-macos-amd64/dbquery-macos-amd64

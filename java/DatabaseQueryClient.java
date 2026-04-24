@@ -6,35 +6,30 @@ import java.util.*;
 import java.util.logging.Logger;
 
 /**
- * DatabaseQueryClient invokes the {@code dbquery} executable
- * (backed by {@code com.microsoft.sqlserver:mssql-jdbc:13.4.0.jre11}),
- * passes connection parameters via <strong>environment variables</strong>
- * (never via command-line arguments, so credentials never appear in the OS
- * process list), and returns the JSON result produced on stdout.
+ * DatabaseQueryClient invokes the native {@code dbquery.exe} (Windows) or
+ * {@code dbquery} (Linux/macOS) executable, passes all connection parameters
+ * via <strong>environment variables</strong> (never via command-line arguments,
+ * so credentials never appear in the OS process list), and returns the JSON
+ * result from stdout.
  *
- * <h2>Prerequisites</h2>
- * <ol>
- *   <li>Build the fat-JAR: {@code mvn package} → {@code target/dbquery.jar}</li>
- *   <li>Copy {@code dbquery.jar} next to the launcher script:
- *       {@code dbquery.sh} (Linux/macOS) or {@code dbquery.bat} (Windows).</li>
- *   <li>Java 11+ must be on {@code PATH} on the machine running the exe.</li>
- * </ol>
+ * <p>The executable is a self-contained native binary built from Go — it
+ * requires <strong>no Java runtime</strong> on the target machine.</p>
  *
  * <h2>Usage example</h2>
  * <pre>{@code
  * DatabaseQueryClient client = new DatabaseQueryClient.Builder()
- *         // Path to dbquery.bat (Windows) or dbquery.sh (Linux/macOS)
- *         .launcherPath("C:/tools/dbquery.bat")
+ *         .executablePath("C:/tools/dbquery.exe")  // or "/opt/tools/dbquery"
  *         .host("sqlserver.example.com")
  *         .port(1433)
  *         .database("MyDatabase")
  *         .user("appuser")
- *         .password("s3cr3t")        // passed via env var — NEVER logged
+ *         .password("s3cr3t")           // passed as env var — NEVER logged
  *         .encrypt(true)
  *         .trustServerCertificate(false)
  *         .logLevel("info")
  *         .build();
  *
+ * // Returns JSON: {"columns":[...], "rows":[{...}], "count": N}
  * String json = client.query("SELECT TOP 10 id, name FROM dbo.Customers");
  * System.out.println(json);
  * }</pre>
@@ -53,14 +48,14 @@ import java.util.logging.Logger;
  *
  * <h2>Error handling</h2>
  * A {@link DatabaseQueryException} is thrown when the executable exits with a
- * non-zero status. The error message contains the tool's stderr output (safe —
- * no credentials).
+ * non-zero status code. The error message comes from the tool's stderr output
+ * (safe — no credentials).
  */
 public class DatabaseQueryClient {
 
     private static final Logger LOGGER = Logger.getLogger(DatabaseQueryClient.class.getName());
 
-    private final String  launcherPath;
+    private final String  executablePath;
     private final String  host;
     private final int     port;
     private final String  database;
@@ -71,7 +66,7 @@ public class DatabaseQueryClient {
     private final String  logLevel;
 
     private DatabaseQueryClient(Builder b) {
-        this.launcherPath           = b.launcherPath;
+        this.executablePath         = b.executablePath;
         this.host                   = b.host;
         this.port                   = b.port;
         this.database               = b.database;
@@ -83,8 +78,8 @@ public class DatabaseQueryClient {
     }
 
     /**
-     * Executes {@code sql} against the configured SQL Server database and returns
-     * the JSON result as a String.
+     * Executes {@code sql} against the configured SQL Server database and
+     * returns the JSON result as a String.
      *
      * @param sql SQL statement to execute
      * @return JSON string: {@code {"columns":[...],"rows":[{...}],"count":N}}
@@ -95,26 +90,29 @@ public class DatabaseQueryClient {
     public String query(String sql)
             throws DatabaseQueryException, IOException, InterruptedException {
 
-        // Safe log — host/port/database only, NO user/password
+        // Log-safe — no user/password
         LOGGER.info("Invoking dbquery — driver=sqlserver host=" + host
                 + " port=" + port + " database=" + database);
 
         ProcessBuilder pb = new ProcessBuilder(buildCommand());
 
-        // Credentials are passed via environment variables so they never
-        // appear in the process command line (visible via ps/Task Manager).
-        pb.environment().put("DB_HOST",     host);
-        pb.environment().put("DB_PORT",     String.valueOf(port));
-        pb.environment().put("DB_NAME",     database);
-        pb.environment().put("DB_USER",     user);
-        pb.environment().put("DB_PASSWORD", password);
-        pb.environment().put("DB_QUERY",    sql);
+        // Credentials travel as environment variables, not CLI flags.
+        // This keeps them out of the OS process list (ps / Task Manager).
+        pb.environment().put("DB_DRIVER",     "sqlserver");
+        pb.environment().put("DB_HOST",       host);
+        pb.environment().put("DB_PORT",       String.valueOf(port));
+        pb.environment().put("DB_NAME",       database);
+        pb.environment().put("DB_USER",       user);
+        pb.environment().put("DB_PASSWORD",   password);
+        pb.environment().put("DB_QUERY",      sql);
+        pb.environment().put("DB_ENCRYPT",    String.valueOf(encrypt));
+        pb.environment().put("DB_TRUST_CERT", String.valueOf(trustServerCertificate));
 
         pb.redirectErrorStream(false);
         Process process = pb.start();
 
-        // Drain stdout (JSON) and stderr (log lines) concurrently to avoid
-        // blocking on a full OS pipe buffer.
+        // Drain stdout (JSON) and stderr (log lines) concurrently to prevent
+        // the process blocking on a full OS pipe buffer.
         StreamDrainer stdoutDrainer = new StreamDrainer(process.getInputStream());
         StreamDrainer stderrDrainer = new StreamDrainer(process.getErrorStream());
         Thread t1 = new Thread(stdoutDrainer, "dbquery-stdout");
@@ -148,24 +146,7 @@ public class DatabaseQueryClient {
     // ─── internal helpers ────────────────────────────────────────────────────
 
     private List<String> buildCommand() {
-        List<String> cmd = new ArrayList<>();
-        if (isWindows()) {
-            // On Windows cmd.exe is needed to invoke .bat files
-            cmd.add("cmd.exe");
-            cmd.add("/c");
-        }
-        cmd.add(launcherPath);
-        cmd.add("--encrypt");
-        cmd.add(String.valueOf(encrypt));
-        cmd.add("--trust-cert");
-        cmd.add(String.valueOf(trustServerCertificate));
-        cmd.add("--log-level");
-        cmd.add(logLevel);
-        return cmd;
-    }
-
-    private static boolean isWindows() {
-        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        return Arrays.asList(executablePath, "--log-level", logLevel);
     }
 
     /** Drains an InputStream into a String on a background thread. */
@@ -193,16 +174,14 @@ public class DatabaseQueryClient {
 
     /** Thrown when the dbquery executable exits with a non-zero exit code. */
     public static class DatabaseQueryException extends Exception {
-        public DatabaseQueryException(String message) {
-            super(message);
-        }
+        public DatabaseQueryException(String message) { super(message); }
     }
 
     // ─── Builder ─────────────────────────────────────────────────────────────
 
     /** Fluent builder for {@link DatabaseQueryClient}. */
     public static class Builder {
-        private String  launcherPath           = isWindows() ? "dbquery.bat" : "dbquery.sh";
+        private String  executablePath         = isWindows() ? "dbquery.exe" : "dbquery";
         private String  host                   = "localhost";
         private int     port                   = 1433;
         private String  database               = "";
@@ -213,43 +192,34 @@ public class DatabaseQueryClient {
         private String  logLevel               = "info";
 
         /**
-         * Path to the dbquery launcher script:
-         * {@code dbquery.bat} on Windows, {@code dbquery.sh} on Linux/macOS.
-         * Default: {@code dbquery.bat} / {@code dbquery.sh} (looked up on PATH).
+         * Full path to the {@code dbquery.exe} (Windows) or {@code dbquery} (Linux/macOS)
+         * binary. Default: {@code dbquery.exe} / {@code dbquery} looked up on {@code PATH}.
          */
-        public Builder launcherPath(String path)           { this.launcherPath = path;           return this; }
-
+        public Builder executablePath(String path)          { this.executablePath = path;          return this; }
         /** SQL Server host name or IP (default: {@code localhost}). */
-        public Builder host(String host)                   { this.host = host;                   return this; }
-
+        public Builder host(String host)                    { this.host = host;                    return this; }
         /** SQL Server port (default: {@code 1433}). */
-        public Builder port(int port)                      { this.port = port;                   return this; }
-
+        public Builder port(int port)                       { this.port = port;                    return this; }
         /** Database / schema name. */
-        public Builder database(String database)           { this.database = database;           return this; }
-
+        public Builder database(String database)            { this.database = database;            return this; }
         /** SQL Server username. */
-        public Builder user(String user)                   { this.user = user;                   return this; }
-
+        public Builder user(String user)                    { this.user = user;                    return this; }
         /** SQL Server password. <strong>Never logged.</strong> */
-        public Builder password(String password)           { this.password = password;           return this; }
-
+        public Builder password(String password)            { this.password = password;            return this; }
         /** Use TLS encryption (default: {@code true}). */
-        public Builder encrypt(boolean encrypt)            { this.encrypt = encrypt;             return this; }
-
+        public Builder encrypt(boolean encrypt)             { this.encrypt = encrypt;              return this; }
         /**
-         * Trust server certificate without validation (default: {@code false}).
-         * Set to {@code true} only for local/dev SQL Server instances.
+         * Trust server certificate without CA validation (default: {@code false}).
+         * Set to {@code true} only for local / Docker SQL Server instances.
          */
-        public Builder trustServerCertificate(boolean v)  { this.trustServerCertificate = v;   return this; }
-
-        /** Log verbosity forwarded to the executable: {@code info | error | none} (default: {@code info}). */
-        public Builder logLevel(String logLevel)           { this.logLevel = logLevel;           return this; }
+        public Builder trustServerCertificate(boolean v)   { this.trustServerCertificate = v;    return this; }
+        /** Log verbosity forwarded to the exe: {@code info | error | none} (default: {@code info}). */
+        public Builder logLevel(String logLevel)            { this.logLevel = logLevel;            return this; }
 
         /** Builds the configured {@link DatabaseQueryClient}. */
         public DatabaseQueryClient build() {
-            if (launcherPath == null || launcherPath.isBlank())
-                throw new IllegalStateException("launcherPath must not be blank");
+            if (executablePath == null || executablePath.isBlank())
+                throw new IllegalStateException("executablePath must not be blank");
             if (database == null || database.isBlank())
                 throw new IllegalStateException("database must not be blank");
             return new DatabaseQueryClient(this);
@@ -263,26 +233,27 @@ public class DatabaseQueryClient {
     // ─── Smoke-test main ─────────────────────────────────────────────────────
 
     /**
-     * Quick smoke test from the command line:
-     * <pre>
-     * java DatabaseQueryClient &lt;launcher&gt; &lt;host&gt; &lt;port&gt; &lt;database&gt; &lt;user&gt; &lt;password&gt; &lt;query&gt;
-     * </pre>
-     *
-     * Example (Linux):
+     * Quick command-line smoke test:
      * <pre>
      * java -cp . com.dbconnectivity.DatabaseQueryClient \
-     *     ./dbquery.sh sqlserver.example.com 1433 MyDB sa mypassword \
+     *     &lt;exe&gt; &lt;host&gt; &lt;port&gt; &lt;database&gt; &lt;user&gt; &lt;password&gt; &lt;query&gt;
+     * </pre>
+     *
+     * Example (Windows):
+     * <pre>
+     * java -cp . com.dbconnectivity.DatabaseQueryClient \
+     *     C:\tools\dbquery.exe sqlserver.example.com 1433 MyDB sa mypass \
      *     "SELECT TOP 5 id, name FROM dbo.Customers"
      * </pre>
      */
     public static void main(String[] args) throws Exception {
         if (args.length < 7) {
             System.err.println("Usage: DatabaseQueryClient"
-                    + " <launcher> <host> <port> <database> <user> <password> <query>");
+                    + " <exe> <host> <port> <database> <user> <password> <query>");
             System.exit(1);
         }
         DatabaseQueryClient client = new Builder()
-                .launcherPath(args[0])
+                .executablePath(args[0])
                 .host(args[1])
                 .port(Integer.parseInt(args[2]))
                 .database(args[3])
@@ -290,10 +261,8 @@ public class DatabaseQueryClient {
                 .password(args[5])
                 .encrypt(true)
                 .trustServerCertificate(false)
-                .logLevel("info")
                 .build();
 
         System.out.println(client.query(args[6]));
     }
 }
-

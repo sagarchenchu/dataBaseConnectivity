@@ -1,11 +1,7 @@
-# Build output
+# Native build output
 dbquery
 dbquery.exe
 dbquery-*
-dbquery.jar
-
-# Maven
-target/
 
 # Go build cache
 *.test
