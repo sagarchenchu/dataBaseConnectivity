@@ -1,0 +1,77 @@
+name: Build dbquery binaries
+
+on:
+  push:
+    branches: ["main", "master"]
+    tags:     ["v*"]
+  pull_request:
+    branches: ["main", "master"]
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - os:     linux
+            runner: ubuntu-latest
+            goos:   linux
+            goarch: amd64
+            ext:    ""
+          - os:     windows
+            runner: ubuntu-latest
+            goos:   windows
+            goarch: amd64
+            ext:    ".exe"
+          - os:     macos
+            runner: ubuntu-latest
+            goos:   darwin
+            goarch: amd64
+            ext:    ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build dbquery
+        env:
+          GOOS:   ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build -ldflags="-s -w" \
+            -o dbquery-${{ matrix.os }}-${{ matrix.goarch }}${{ matrix.ext }} \
+            ./cmd/dbquery
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbquery-${{ matrix.os }}-${{ matrix.goarch }}
+          path: dbquery-${{ matrix.os }}-${{ matrix.goarch }}${{ matrix.ext }}
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dbquery-linux-amd64/dbquery-linux-amd64
+            dbquery-windows-amd64/dbquery-windows-amd64.exe
+            dbquery-macos-amd64/dbquery-macos-amd64

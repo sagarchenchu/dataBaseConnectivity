@@ -1,0 +1,10 @@
+# Build output
+dbquery
+dbquery.exe
+dbquery-*
+
+# Go build cache
+*.test
+
+# macOS
+.DS_Store
