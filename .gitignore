@@ -1,0 +1,13 @@
+# Native build output (root-level binaries only)
+/dbquery
+/dbquery.exe
+/dbquery-*
+
+# Keep the cmd/ source directory tracked
+!cmd/
+
+# Go build cache
+*.test
+
+# macOS
+.DS_Store

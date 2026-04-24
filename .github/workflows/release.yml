@@ -1,0 +1,131 @@
+name: Release v0.1
+
+# Triggers when a pull request is merged into master.
+# The push event fires after the merge commit lands on master.
+on:
+  push:
+    branches:
+      - master
+      - main
+
+jobs:
+  # ── 1. Run tests ─────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+  # ── 2. Build cross-platform binaries ────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.os }})
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - os:     windows
+            goos:   windows
+            goarch: amd64
+            binary: dbquery.exe
+          - os:     linux
+            goos:   linux
+            goarch: amd64
+            binary: dbquery-linux-amd64
+          - os:     macos
+            goos:   darwin
+            goarch: amd64
+            binary: dbquery-macos-amd64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build ${{ matrix.binary }}
+        env:
+          GOOS:        ${{ matrix.goos }}
+          GOARCH:      ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build \
+            -ldflags="-s -w -X main.Version=v0.1" \
+            -o ${{ matrix.binary }} \
+            ./cmd/dbquery
+
+      - name: Upload ${{ matrix.binary }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          path: ${{ matrix.binary }}
+          retention-days: 7
+
+  # ── 3. Create GitHub Release v0.1 ───────────────────────────────────────────
+  release:
+    name: GitHub Release v0.1
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required to create tags and releases
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create or update release v0.1
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1
+          name: "dbquery v0.1"
+          body: |
+            ## dbquery v0.1
+
+            First release of the `dbquery` native binary.
+
+            ### Downloads
+
+            | Platform | File |
+            |----------|------|
+            | Windows (amd64) | `dbquery.exe` |
+            | Linux (amd64)   | `dbquery-linux-amd64` |
+            | macOS (amd64)   | `dbquery-macos-amd64` |
+
+            ### Usage
+
+            All connection parameters are passed as **environment variables** — credentials never appear in the process list.
+
+            ```sh
+            export DB_DRIVER=sqlserver
+            export DB_HOST=sqlserver.example.com
+            export DB_PORT=1433
+            export DB_NAME=MyDatabase
+            export DB_USER=appuser
+            export DB_PASSWORD=s3cr3t
+            export DB_QUERY="SELECT TOP 10 id, name FROM dbo.Customers"
+
+            ./dbquery.exe          # Windows
+            ./dbquery-linux-amd64  # Linux
+            ```
+
+            Returns JSON: `{"columns":[...],"rows":[{...}],"count":N}`
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            dbquery.exe/dbquery.exe
+            dbquery-linux-amd64/dbquery-linux-amd64
+            dbquery-macos-amd64/dbquery-macos-amd64
